@@ -16,7 +16,7 @@ namespace FLS.Implementation
 {
     public class ServerCommunication
     {
-        private readonly ClientWebSocket Socket;
+        private ClientWebSocket Socket;
         private const int DefaultMessageCapacity = 4096;
         private const string MasterServer = "API";
         private readonly int EncryptedHeaderSize = AesGcm.NonceByteSizes.MaxSize + AesGcm.TagByteSizes.MaxSize;
@@ -24,13 +24,14 @@ namespace FLS.Implementation
         private readonly Server Server;
         private ServerConfig Config => Server.Config;
         private SessionManager SessionManager => Server.SessionManager;
+        private CancellationToken CancellationToken => Server.StopToken.Token;
         private bool HasKey => !string.IsNullOrEmpty(Config.ServerCommunicationKey);
+        private Task ReceiveTask;
+        public bool IsConnected => Socket is { State: WebSocketState.Open } || !ReceiveTask.IsCompleted;
 
         public ServerCommunication(Server server)
         {
             Server = server;
-            Socket = new();
-            Socket.Options.SetRequestHeader("server_id", Server.ServerID.ToString());
 
             if (HasKey)
                 Aes = new AesGcm(Encoding.UTF8.GetBytes(Config.ServerCommunicationKey), AesGcm.TagByteSizes.MaxSize);
@@ -38,13 +39,18 @@ namespace FLS.Implementation
 
         public void Start() 
         {
+            Socket?.Dispose();
+
+            Socket = new();
+            Socket.Options.SetRequestHeader("server_id", Server.ServerID.ToString());
+            
             var url = Config.ApiUrl.TrimEnd('/');
             url = url.StartsWith("http") ? url.Replace("http", "ws") : url.Replace("https", "wss");
             url += "/api/Gateway";
 
-            Socket.ConnectAsync(new Uri(url), CancellationToken.None).Wait();
+            Socket.ConnectAsync(new Uri(url), CancellationToken).Wait(CancellationToken);
 
-            Task.Run(Receive);
+            ReceiveTask = Task.Run(Receive, CancellationToken);
 
             DispatchEvent(GatewayEvents.ServerInfo, new ServerInfo
             {
@@ -57,7 +63,7 @@ namespace FLS.Implementation
 
         public void Stop()
         {
-            Socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Server shutdown", CancellationToken.None).Wait();
+            Socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Server shutdown", CancellationToken).Wait(CancellationToken);
         }
 
         private void DispatchEvent(string type, object evt)
@@ -72,7 +78,7 @@ namespace FLS.Implementation
 
             string payload = JsonConvert.SerializeObject(message);
             
-            Send(payload).Wait();
+            Send(payload).Wait(CancellationToken);
         }
 
         private async Task Send(string message)
@@ -88,7 +94,7 @@ namespace FLS.Implementation
             else bytes = Encoding.UTF8.GetBytes(message);
 
             if (Socket.State == WebSocketState.Open)
-                await Socket.SendAsync(bytes, type, true, CancellationToken.None);
+                await Socket.SendAsync(bytes, type, true, CancellationToken);
         }
 
         private async Task Receive()
@@ -102,7 +108,7 @@ namespace FLS.Implementation
                 {
                     do
                     {
-                        result = await Socket.ReceiveAsync(scratch, CancellationToken.None);
+                        result = await Socket.ReceiveAsync(scratch, CancellationToken);
                         buffer.AddRange(scratch.AsSpan(0, result.Count));
                     }
                     while (!result.EndOfMessage);
@@ -153,7 +159,7 @@ namespace FLS.Implementation
 
             try
             {
-                await Socket.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, string.Empty, CancellationToken.None);
+                await Socket.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, string.Empty, CancellationToken);
             }
             catch (Exception)
             {

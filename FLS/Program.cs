@@ -1,7 +1,6 @@
 ﻿using FLS.Implementation;
 using Serilog;
 using Serilog.Events;
-using System;
 
 namespace FLS
 {
@@ -21,8 +20,7 @@ namespace FLS
 
             server.Start();
 
-            while (!Console.KeyAvailable)
-                server.CheckClients();
+            while (!server.StopToken.IsCancellationRequested) {}
 
             server.Stop();
         }
